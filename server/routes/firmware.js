@@ -101,7 +101,7 @@ router.get('/:id', authenticateToken, requireAdmin, (req, res) => {
 });
 
 // رفع فيرموير جديد
-router.post('/api/firmware/upload', authenticateToken, requireAdmin, (req, res) => {
+app.post('/api/firmware/upload', authenticateToken, requireAdmin, (req, res) => {
 try {
     const { version, description, targetPrinters, fileUrl, fileSize } = req.body;
     
