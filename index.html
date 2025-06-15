@@ -9,5 +9,32 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script src="https://unpkg.com/@supabase/supabase-js"></script>
+<script>
+  const supabaseUrl = 'https://qsoivvitfbxdwfscqdlx.supabase.co';
+  const supabaseKey ='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFzb2l2dml0ZmJ4ZHdmc2NxZGx4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDk5Mjg4ODQsImV4cCI6MjA2NTUwNDg4NH0.atW_tut7ESPJO_fZdThoMc6Gh5LS9IEl7qWHZBIC6GM';
+
+  const supabase = supabase.createClient(supabaseUrl, supabaseKey);
+
+  async function uploadFile() {
+    const fileInput = document.getElementById('firmwareFile');
+    const file = fileInput.files[0];
+    const { data, error } = await supabase
+      .storage
+      .from('firmware')
+      .upload('firmware/' + file.name, file, { upsert: true });
+
+    if (error) {
+      alert('Upload failed: ' + error.message);
+    } else {
+      const publicUrl = supabase
+        .storage
+        .from('firmware')
+        .getPublicUrl('firmware/' + file.name);
+      alert('File uploaded successfully! Public URL: ' + publicUrl.data.publicUrl);
+    }
+  }
+</script>
+
   </body>
 </html>
