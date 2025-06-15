@@ -14,7 +14,7 @@
   const supabaseUrl = 'https://qsoivvitfbxdwfscqdlx.supabase.co';
   const supabaseKey ='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFzb2l2dml0ZmJ4ZHdmc2NxZGx4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDk5Mjg4ODQsImV4cCI6MjA2NTUwNDg4NH0.atW_tut7ESPJO_fZdThoMc6Gh5LS9IEl7qWHZBIC6GM';
 
-  const supabase = supabase.createClient(supabaseUrl, supabaseKey);
+  const supabase = createClient(supabaseUrl, supabaseKey);
 
   async function uploadFile() {
     const fileInput = document.getElementById('firmwareFile');
