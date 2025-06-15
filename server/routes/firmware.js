@@ -101,19 +101,30 @@ router.get('/:id', authenticateToken, requireAdmin, (req, res) => {
 });
 
 // رفع فيرموير جديد
-router.post('/upload', authenticateToken, requireAdmin, upload.single('firmware'), (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
+router.post('/api/firmware/upload', authenticateToken, requireAdmin, (req, res) => {
+try {
+    const { version, description, targetPrinters, fileUrl, fileSize } = req.body;
+    
+    if (!version || !description || !fileUrl) {
+      return res.status(400).json({ error: 'Version, description and fileUrl are required' });
     }
 
-    const { version, description, targetPrinters } = req.body;
-    
-    if (!version || !description) {
-      // حذف الملف المرفوع إذا كانت البيانات ناقصة
-      fs.unlinkSync(req.file.path);
-      return res.status(400).json({ error: 'Version and description are required' });
-    }
+    const newFirmware = {
+      id: uuidv4(),
+      version,
+      filename: fileUrl,  // هنا بنسجل URL نفسه بدل اسم الفايل
+      size: parseInt(fileSize) || 0,
+      uploadDate: new Date().toISOString().split('T')[0],
+      description,
+      status: 'pending',
+      targetPrinters: JSON.parse(targetPrinters || '[]')
+    };
+
+    firmwareUpdates.unshift(newFirmware);
+    res.json(newFirmware);
+  } catch (error) {
+    res.status(500).json({ error: 'Upload failed' });
+  }
 
     // التحقق من عدم وجود إصدار مماثل
     const existingUpdate = firmwareUpdates.find(u => u.version === version);
