@@ -27,6 +27,8 @@ export interface FirmwareUpdate {
   status: 'pending' | 'deploying' | 'completed' | 'failed';
   targetPrinters: string[];
   progress?: number;
+  url?: string; // Supabase Storage URL
+  supabaseId?: string; // Supabase database ID
 }
 
 export interface UpdateHistory {

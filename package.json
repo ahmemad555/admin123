@@ -21,7 +21,8 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
     "sqlite3": "^5.1.6",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "@supabase/supabase-js": "^2.39.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.9.1",

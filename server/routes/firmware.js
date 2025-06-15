@@ -4,26 +4,12 @@ import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { authenticateToken, requireAdmin } from '../middleware/auth.js';
-import { config } from '../config.js';
+import { config, supabase } from '../config.js';
 
 const router = express.Router();
 
-// إنشاء مجلد الرفع إذا لم يكن موجوداً
-const uploadsDir = path.join(process.cwd(), 'server', 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-
-// إعداد multer لرفع الملفات
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadsDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-  }
-});
+// إعداد multer للذاكرة المؤقتة (بدلاً من حفظ الملفات محلياً)
+const storage = multer.memoryStorage();
 
 const upload = multer({ 
   storage: storage,
@@ -40,7 +26,7 @@ const upload = multer({
   }
 });
 
-// Mock data
+// Mock data - في الإنتاج، هذا سيأتي من قاعدة البيانات
 let firmwareUpdates = [
   {
     id: '1',
@@ -52,7 +38,8 @@ let firmwareUpdates = [
     status: 'pending',
     targetPrinters: ['1', '2', '3', '4'],
     uploadedBy: 'admin',
-    checksum: 'sha256:abc123...'
+    checksum: 'sha256:abc123...',
+    url: null
   },
   {
     id: '2',
@@ -64,7 +51,8 @@ let firmwareUpdates = [
     status: 'completed',
     targetPrinters: ['1', '4'],
     uploadedBy: 'admin',
-    checksum: 'sha256:def456...'
+    checksum: 'sha256:def456...',
+    url: null
   }
 ];
 
@@ -100,37 +88,62 @@ router.get('/:id', authenticateToken, requireAdmin, (req, res) => {
   }
 });
 
-// رفع فيرموير جديد
-app.post('/api/firmware/upload', authenticateToken, requireAdmin, (req, res) => {
-try {
-    const { version, description, targetPrinters, fileUrl, fileSize } = req.body;
-    
-    if (!version || !description || !fileUrl) {
-      return res.status(400).json({ error: 'Version, description and fileUrl are required' });
+// رفع فيرموير جديد إلى Supabase Storage
+router.post('/upload', authenticateToken, requireAdmin, upload.single('firmware'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const newFirmware = {
-      id: uuidv4(),
-      version,
-      filename: fileUrl,  // هنا بنسجل URL نفسه بدل اسم الفايل
-      size: parseInt(fileSize) || 0,
-      uploadDate: new Date().toISOString().split('T')[0],
-      description,
-      status: 'pending',
-      targetPrinters: JSON.parse(targetPrinters || '[]')
-    };
-
-    firmwareUpdates.unshift(newFirmware);
-    res.json(newFirmware);
-  } catch (error) {
-    res.status(500).json({ error: 'Upload failed' });
-  }
+    const { version, description, targetPrinters } = req.body;
+    
+    if (!version || !description) {
+      return res.status(400).json({ error: 'Version and description are required' });
+    }
 
     // التحقق من عدم وجود إصدار مماثل
     const existingUpdate = firmwareUpdates.find(u => u.version === version);
     if (existingUpdate) {
-      fs.unlinkSync(req.file.path);
       return res.status(400).json({ error: 'Version already exists' });
+    }
+
+    // رفع الملف إلى Supabase Storage
+    const fileName = `firmware_${version}_${Date.now()}${path.extname(req.file.originalname)}`;
+    const filePath = `firmware/${fileName}`;
+
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('firmware')
+      .upload(filePath, req.file.buffer, {
+        contentType: req.file.mimetype,
+        upsert: false
+      });
+
+    if (uploadError) {
+      console.error('Supabase upload error:', uploadError);
+      return res.status(500).json({ error: 'Failed to upload file to storage' });
+    }
+
+    // الحصول على الـ public URL
+    const { data: urlData } = supabase.storage
+      .from('firmware')
+      .getPublicUrl(filePath);
+
+    // إضافة السجل إلى قاعدة البيانات
+    const { data: dbData, error: dbError } = await supabase
+      .from('firmware_updates')
+      .insert([
+        {
+          version,
+          url: urlData.publicUrl
+        }
+      ])
+      .select();
+
+    if (dbError) {
+      console.error('Database insert error:', dbError);
+      // حذف الملف من Storage في حالة فشل إدراج قاعدة البيانات
+      await supabase.storage.from('firmware').remove([filePath]);
+      return res.status(500).json({ error: 'Failed to save firmware record' });
     }
 
     const newFirmware = {
@@ -142,9 +155,10 @@ try {
       description,
       status: 'pending',
       targetPrinters: JSON.parse(targetPrinters || '[]'),
-      filePath: req.file.path,
       uploadedBy: req.user.username,
-      checksum: `sha256:${Math.random().toString(36).substring(2, 15)}...` // في الإنتاج، احسب الـ checksum الحقيقي
+      checksum: `sha256:${Math.random().toString(36).substring(2, 15)}...`,
+      url: urlData.publicUrl,
+      supabaseId: dbData[0].id
     };
 
     firmwareUpdates.unshift(newFirmware);
@@ -152,14 +166,10 @@ try {
     res.status(201).json({
       success: true,
       data: newFirmware,
-      message: 'Firmware uploaded successfully'
+      message: 'Firmware uploaded successfully to Supabase Storage'
     });
   } catch (error) {
     console.error('Upload error:', error);
-    // حذف الملف في حالة حدوث خطأ
-    if (req.file) {
-      fs.unlinkSync(req.file.path);
-    }
     res.status(500).json({ error: 'Upload failed' });
   }
 });
@@ -226,7 +236,7 @@ router.post('/:id/cancel', authenticateToken, requireAdmin, (req, res) => {
 });
 
 // حذف تحديث فيرموير
-router.delete('/:id', authenticateToken, requireAdmin, (req, res) => {
+router.delete('/:id', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const updateIndex = firmwareUpdates.findIndex(u => u.id === req.params.id);
     if (updateIndex === -1) {
@@ -240,9 +250,18 @@ router.delete('/:id', authenticateToken, requireAdmin, (req, res) => {
       return res.status(400).json({ error: 'Cannot delete update that is currently deploying' });
     }
 
-    // حذف الملف من النظام
-    if (update.filePath && fs.existsSync(update.filePath)) {
-      fs.unlinkSync(update.filePath);
+    // حذف الملف من Supabase Storage
+    if (update.url) {
+      const filePath = update.url.split('/').pop();
+      await supabase.storage.from('firmware').remove([`firmware/${filePath}`]);
+    }
+
+    // حذف السجل من قاعدة البيانات
+    if (update.supabaseId) {
+      await supabase
+        .from('firmware_updates')
+        .delete()
+        .eq('id', update.supabaseId);
     }
 
     const deletedUpdate = firmwareUpdates.splice(updateIndex, 1)[0];
@@ -250,7 +269,7 @@ router.delete('/:id', authenticateToken, requireAdmin, (req, res) => {
     res.json({
       success: true,
       data: deletedUpdate,
-      message: 'Firmware update deleted successfully'
+      message: 'Firmware update deleted successfully from Supabase'
     });
   } catch (error) {
     console.error('Delete error:', error);

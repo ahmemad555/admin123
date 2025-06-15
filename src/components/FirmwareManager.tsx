@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { FirmwareUpdate, Printer } from '../types';
+import { supabase, uploadFirmware } from '../lib/supabase';
 import { 
   Upload, 
   Download, 
@@ -10,7 +11,8 @@ import {
   Pause,
   AlertCircle,
   CheckCircle,
-  Clock
+  Clock,
+  ExternalLink
 } from 'lucide-react';
 
 interface FirmwareManagerProps {
@@ -22,6 +24,9 @@ const FirmwareManager: React.FC<FirmwareManagerProps> = ({ updates, printers }) 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isUploading, setIsUploading] = useState(false);
+  const [version, setVersion] = useState('');
+  const [description, setDescription] = useState('');
+  const [targetPrinters, setTargetPrinters] = useState<string[]>([]);
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -31,23 +36,57 @@ const FirmwareManager: React.FC<FirmwareManagerProps> = ({ updates, printers }) 
   };
 
   const handleUpload = async () => {
-    if (!selectedFile) return;
+    if (!selectedFile || !version || !description) {
+      alert('Please fill all required fields');
+      return;
+    }
 
     setIsUploading(true);
     setUploadProgress(0);
 
-    // Simulate upload progress
-    const interval = setInterval(() => {
-      setUploadProgress(prev => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setIsUploading(false);
-          setSelectedFile(null);
-          return 100;
-        }
-        return prev + 10;
+    try {
+      // رفع الملف إلى Supabase Storage
+      const { url } = await uploadFirmware(selectedFile, version);
+
+      // إرسال البيانات إلى الـ API
+      const formData = new FormData();
+      formData.append('version', version);
+      formData.append('description', description);
+      formData.append('targetPrinters', JSON.stringify(targetPrinters));
+      formData.append('fileUrl', url);
+      formData.append('fileSize', selectedFile.size.toString());
+
+      const response = await fetch('/api/firmware/upload', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: formData
       });
-    }, 200);
+
+      if (response.ok) {
+        setUploadProgress(100);
+        alert('Firmware uploaded successfully to Supabase Storage!');
+        
+        // Reset form
+        setSelectedFile(null);
+        setVersion('');
+        setDescription('');
+        setTargetPrinters([]);
+        
+        // Refresh page to show new firmware
+        window.location.reload();
+      } else {
+        const error = await response.json();
+        alert(`Upload failed: ${error.error}`);
+      }
+    } catch (error) {
+      console.error('Upload error:', error);
+      alert(`Upload failed: ${error.message}`);
+    } finally {
+      setIsUploading(false);
+      setUploadProgress(0);
+    }
   };
 
   const formatFileSize = (bytes: number) => {
@@ -91,12 +130,60 @@ const FirmwareManager: React.FC<FirmwareManagerProps> = ({ updates, printers }) 
     <div className="space-y-6">
       {/* Upload New Firmware */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">Upload New Firmware</h2>
+        <h2 className="text-lg font-semibold text-gray-900 mb-4">Upload New Firmware to Supabase Storage</h2>
         
         <div className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Version *
+              </label>
+              <input
+                type="text"
+                value={version}
+                onChange={(e) => setVersion(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                placeholder="e.g., 2.3.0"
+                required
+              />
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Target Printers
+              </label>
+              <select
+                multiple
+                value={targetPrinters}
+                onChange={(e) => setTargetPrinters(Array.from(e.target.selectedOptions, option => option.value))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+              >
+                {printers.map(printer => (
+                  <option key={printer.id} value={printer.id}>
+                    {printer.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Select Firmware File
+              Description *
+            </label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+              rows={3}
+              placeholder="Describe the changes in this firmware update..."
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Select Firmware File *
             </label>
             <div className="flex items-center space-x-4">
               <label className="relative cursor-pointer bg-white rounded-lg border-2 border-dashed border-gray-300 p-6 hover:border-orange-400 transition-colors duration-200 flex-1">
@@ -133,10 +220,10 @@ const FirmwareManager: React.FC<FirmwareManagerProps> = ({ updates, printers }) 
                 </div>
                 <button
                   onClick={handleUpload}
-                  disabled={isUploading}
+                  disabled={isUploading || !version || !description}
                   className="px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-200"
                 >
-                  {isUploading ? 'Uploading...' : 'Upload'}
+                  {isUploading ? 'Uploading to Supabase...' : 'Upload to Supabase'}
                 </button>
               </div>
 
@@ -172,6 +259,17 @@ const FirmwareManager: React.FC<FirmwareManagerProps> = ({ updates, printers }) 
                     Version {update.version}
                   </h3>
                   <p className="text-sm text-gray-600">{update.filename}</p>
+                  {update.url && (
+                    <a 
+                      href={update.url} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center space-x-1 text-sm text-blue-600 hover:text-blue-800 mt-1"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      <span>View in Supabase Storage</span>
+                    </a>
+                  )}
                 </div>
                 <div className={`px-3 py-1 rounded-full text-xs font-medium border ${getStatusColor(update.status)}`}>
                   <div className="flex items-center space-x-1">
