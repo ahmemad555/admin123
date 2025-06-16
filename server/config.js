@@ -7,12 +7,13 @@ export const config = {
   maxFileSize: 50 * 1024 * 1024, // 50MB
   allowedFileTypes: ['.bin', '.hex'],
   database: {
-    // إعدادات قاعدة البيانات - يمكن تطويرها لاحقاً
-    type: 'memory', // memory, sqlite, mysql, postgresql
+    type: 'memory',
     connectionString: process.env.DATABASE_URL
   },
   cors: {
-    origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+    origin: process.env.NODE_ENV === 'production' 
+      ? process.env.FRONTEND_URL || 'https://fota-concrete-printing.vercel.app'
+      : 'http://localhost:5173',
     credentials: true
   },
   supabase: {
@@ -23,11 +24,13 @@ export const config = {
   googleDrive: {
     clientId: process.env.GOOGLE_DRIVE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_DRIVE_CLIENT_SECRET,
-    redirectUri: process.env.GOOGLE_DRIVE_REDIRECT_URI || 'http://localhost:3001/api/auth/google/callback',
+    redirectUri: process.env.GOOGLE_DRIVE_REDIRECT_URI || 
+      (process.env.NODE_ENV === 'production' 
+        ? 'https://fota-concrete-printing.vercel.app/api/firmware/storage/googledrive/callback'
+        : 'http://localhost:3001/api/firmware/storage/googledrive/callback'),
     refreshToken: process.env.GOOGLE_DRIVE_REFRESH_TOKEN,
-    folderId: process.env.GOOGLE_DRIVE_FOLDER_ID // معرف المجلد المخصص للفيرموير
+    folderId: process.env.GOOGLE_DRIVE_FOLDER_ID
   },
-  // خيار التخزين: 'supabase' أو 'googledrive' أو 'both'
   storageProvider: process.env.STORAGE_PROVIDER || 'supabase'
 };
 
