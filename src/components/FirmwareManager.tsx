@@ -1,6 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { FirmwareUpdate, Printer } from '../types';
-import { supabase, uploadFirmware } from '../lib/supabase';
 import { 
   Upload, 
   Download, 
@@ -12,12 +11,22 @@ import {
   AlertCircle,
   CheckCircle,
   Clock,
-  ExternalLink
+  ExternalLink,
+  Cloud,
+  Database,
+  Settings,
+  Wifi,
+  WifiOff
 } from 'lucide-react';
 
 interface FirmwareManagerProps {
   updates: FirmwareUpdate[];
   printers: Printer[];
+}
+
+interface StorageStatus {
+  supabase: { connected: boolean };
+  googleDrive: { connected: boolean; user?: any; error?: string };
 }
 
 const FirmwareManager: React.FC<FirmwareManagerProps> = ({ updates, printers }) => {
@@ -27,6 +36,48 @@ const FirmwareManager: React.FC<FirmwareManagerProps> = ({ updates, printers }) 
   const [version, setVersion] = useState('');
   const [description, setDescription] = useState('');
   const [targetPrinters, setTargetPrinters] = useState<string[]>([]);
+  const [storageProvider, setStorageProvider] = useState<'supabase' | 'googledrive' | 'both'>('supabase');
+  const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
+  const [showStorageSettings, setShowStorageSettings] = useState(false);
+
+  // جلب حالة خدمات التخزين
+  useEffect(() => {
+    fetchStorageStatus();
+  }, []);
+
+  const fetchStorageStatus = async () => {
+    try {
+      const response = await fetch('/api/firmware/storage/status', {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setStorageStatus(data.data);
+      }
+    } catch (error) {
+      console.error('Error fetching storage status:', error);
+    }
+  };
+
+  const handleGoogleDriveAuth = async () => {
+    try {
+      const response = await fetch('/api/firmware/storage/googledrive/auth', {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        window.open(data.authUrl, '_blank', 'width=500,height=600');
+      }
+    } catch (error) {
+      console.error('Error getting Google Drive auth URL:', error);
+    }
+  };
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -45,16 +96,12 @@ const FirmwareManager: React.FC<FirmwareManagerProps> = ({ updates, printers }) 
     setUploadProgress(0);
 
     try {
-      // رفع الملف إلى Supabase Storage
-      const { url } = await uploadFirmware(selectedFile, version);
-
-      // إرسال البيانات إلى الـ API
       const formData = new FormData();
+      formData.append('firmware', selectedFile);
       formData.append('version', version);
       formData.append('description', description);
       formData.append('targetPrinters', JSON.stringify(targetPrinters));
-      formData.append('fileUrl', url);
-      formData.append('fileSize', selectedFile.size.toString());
+      formData.append('storageProvider', storageProvider);
 
       const response = await fetch('/api/firmware/upload', {
         method: 'POST',
@@ -65,8 +112,9 @@ const FirmwareManager: React.FC<FirmwareManagerProps> = ({ updates, printers }) 
       });
 
       if (response.ok) {
+        const result = await response.json();
         setUploadProgress(100);
-        alert('Firmware uploaded successfully to Supabase Storage!');
+        alert(`Firmware uploaded successfully to ${result.uploadResult.provider}!`);
         
         // Reset form
         setSelectedFile(null);
@@ -126,14 +174,94 @@ const FirmwareManager: React.FC<FirmwareManagerProps> = ({ updates, printers }) 
     }
   };
 
+  const getStorageIcon = (provider: string) => {
+    switch (provider) {
+      case 'supabase':
+        return <Database className="w-4 h-4 text-green-600" />;
+      case 'googledrive':
+        return <Cloud className="w-4 h-4 text-blue-600" />;
+      case 'both':
+        return (
+          <div className="flex space-x-1">
+            <Database className="w-3 h-3 text-green-600" />
+            <Cloud className="w-3 h-3 text-blue-600" />
+          </div>
+        );
+      default:
+        return <HardDrive className="w-4 h-4 text-gray-600" />;
+    }
+  };
+
   return (
     <div className="space-y-6">
+      {/* Storage Status Panel */}
+      {storageStatus && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold text-gray-900">Storage Services Status</h2>
+            <button
+              onClick={() => setShowStorageSettings(!showStorageSettings)}
+              className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors duration-200"
+            >
+              <Settings className="w-5 h-5" />
+            </button>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+              <div className="flex items-center space-x-3">
+                <Database className="w-6 h-6 text-green-600" />
+                <div>
+                  <p className="font-medium text-gray-900">Supabase Storage</p>
+                  <p className="text-sm text-gray-600">Database & File Storage</p>
+                </div>
+              </div>
+              {storageStatus.supabase.connected ? (
+                <Wifi className="w-5 h-5 text-green-500" />
+              ) : (
+                <WifiOff className="w-5 h-5 text-red-500" />
+              )}
+            </div>
+
+            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+              <div className="flex items-center space-x-3">
+                <Cloud className="w-6 h-6 text-blue-600" />
+                <div>
+                  <p className="font-medium text-gray-900">Google Drive</p>
+                  <p className="text-sm text-gray-600">
+                    {storageStatus.googleDrive.connected 
+                      ? `Connected as ${storageStatus.googleDrive.user?.displayName || 'User'}`
+                      : 'Not connected'
+                    }
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center space-x-2">
+                {storageStatus.googleDrive.connected ? (
+                  <Wifi className="w-5 h-5 text-green-500" />
+                ) : (
+                  <>
+                    <WifiOff className="w-5 h-5 text-red-500" />
+                    <button
+                      onClick={handleGoogleDriveAuth}
+                      className="px-3 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors duration-200"
+                    >
+                      Connect
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Upload New Firmware */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">Upload New Firmware to Supabase Storage</h2>
+        <h2 className="text-lg font-semibold text-gray-900 mb-4">Upload New Firmware</h2>
         
         <div className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Version *
@@ -146,6 +274,21 @@ const FirmwareManager: React.FC<FirmwareManagerProps> = ({ updates, printers }) 
                 placeholder="e.g., 2.3.0"
                 required
               />
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Storage Provider *
+              </label>
+              <select
+                value={storageProvider}
+                onChange={(e) => setStorageProvider(e.target.value as any)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+              >
+                <option value="supabase">Supabase Storage</option>
+                <option value="googledrive">Google Drive</option>
+                <option value="both">Both (Backup)</option>
+              </select>
             </div>
             
             <div>
@@ -216,6 +359,13 @@ const FirmwareManager: React.FC<FirmwareManagerProps> = ({ updates, printers }) 
                   <div>
                     <p className="font-medium text-gray-900">{selectedFile.name}</p>
                     <p className="text-sm text-gray-500">{formatFileSize(selectedFile.size)}</p>
+                    <div className="flex items-center space-x-2 mt-1">
+                      <span className="text-xs text-gray-500">Upload to:</span>
+                      {getStorageIcon(storageProvider)}
+                      <span className="text-xs font-medium text-gray-700 capitalize">
+                        {storageProvider === 'both' ? 'Supabase + Google Drive' : storageProvider}
+                      </span>
+                    </div>
                   </div>
                 </div>
                 <button
@@ -223,7 +373,7 @@ const FirmwareManager: React.FC<FirmwareManagerProps> = ({ updates, printers }) 
                   disabled={isUploading || !version || !description}
                   className="px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-200"
                 >
-                  {isUploading ? 'Uploading to Supabase...' : 'Upload to Supabase'}
+                  {isUploading ? 'Uploading...' : 'Upload'}
                 </button>
               </div>
 
@@ -259,17 +409,41 @@ const FirmwareManager: React.FC<FirmwareManagerProps> = ({ updates, printers }) 
                     Version {update.version}
                   </h3>
                   <p className="text-sm text-gray-600">{update.filename}</p>
-                  {update.url && (
-                    <a 
-                      href={update.url} 
-                      target="_blank" 
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center space-x-1 text-sm text-blue-600 hover:text-blue-800 mt-1"
-                    >
-                      <ExternalLink className="w-3 h-3" />
-                      <span>View in Supabase Storage</span>
-                    </a>
-                  )}
+                  
+                  {/* Storage Info */}
+                  <div className="flex items-center space-x-2 mt-2">
+                    <span className="text-xs text-gray-500">Stored on:</span>
+                    {getStorageIcon(update.storageInfo?.provider || 'unknown')}
+                    <span className="text-xs font-medium text-gray-700 capitalize">
+                      {update.storageInfo?.provider || 'Unknown'}
+                    </span>
+                    
+                    {/* Storage Links */}
+                    <div className="flex space-x-2 ml-2">
+                      {update.storageInfo?.supabaseUrl && (
+                        <a 
+                          href={update.storageInfo.supabaseUrl} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center space-x-1 text-xs text-green-600 hover:text-green-800"
+                        >
+                          <Database className="w-3 h-3" />
+                          <span>Supabase</span>
+                        </a>
+                      )}
+                      {update.storageInfo?.googleDriveViewLink && (
+                        <a 
+                          href={update.storageInfo.googleDriveViewLink} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center space-x-1 text-xs text-blue-600 hover:text-blue-800"
+                        >
+                          <Cloud className="w-3 h-3" />
+                          <span>Drive</span>
+                        </a>
+                      )}
+                    </div>
+                  </div>
                 </div>
                 <div className={`px-3 py-1 rounded-full text-xs font-medium border ${getStatusColor(update.status)}`}>
                   <div className="flex items-center space-x-1">

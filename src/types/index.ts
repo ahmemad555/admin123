@@ -27,8 +27,15 @@ export interface FirmwareUpdate {
   status: 'pending' | 'deploying' | 'completed' | 'failed';
   targetPrinters: string[];
   progress?: number;
-  url?: string; // Supabase Storage URL
-  supabaseId?: string; // Supabase database ID
+  storageInfo?: {
+    provider: 'supabase' | 'googledrive' | 'both';
+    supabaseUrl?: string;
+    supabaseDbId?: string;
+    supabasePath?: string;
+    googleDriveId?: string;
+    googleDriveLink?: string;
+    googleDriveViewLink?: string;
+  };
 }
 
 export interface UpdateHistory {

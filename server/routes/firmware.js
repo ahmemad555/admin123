@@ -1,14 +1,15 @@
 import express from 'express';
 import multer from 'multer';
 import path from 'path';
-import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { authenticateToken, requireAdmin } from '../middleware/auth.js';
-import { config, supabase } from '../config.js';
+import { config } from '../config.js';
+import StorageService from '../services/storageService.js';
 
 const router = express.Router();
+const storageService = new StorageService();
 
-// إعداد multer للذاكرة المؤقتة (بدلاً من حفظ الملفات محلياً)
+// إعداد multer للذاكرة المؤقتة
 const storage = multer.memoryStorage();
 
 const upload = multer({ 
@@ -39,7 +40,11 @@ let firmwareUpdates = [
     targetPrinters: ['1', '2', '3', '4'],
     uploadedBy: 'admin',
     checksum: 'sha256:abc123...',
-    url: null
+    storageInfo: {
+      provider: 'supabase',
+      supabaseUrl: null,
+      googleDriveId: null
+    }
   },
   {
     id: '2',
@@ -52,7 +57,11 @@ let firmwareUpdates = [
     targetPrinters: ['1', '4'],
     uploadedBy: 'admin',
     checksum: 'sha256:def456...',
-    url: null
+    storageInfo: {
+      provider: 'supabase',
+      supabaseUrl: null,
+      googleDriveId: null
+    }
   }
 ];
 
@@ -62,7 +71,8 @@ router.get('/', authenticateToken, requireAdmin, (req, res) => {
     res.json({
       success: true,
       data: firmwareUpdates,
-      count: firmwareUpdates.length
+      count: firmwareUpdates.length,
+      storageProvider: config.storageProvider
     });
   } catch (error) {
     console.error('Error fetching firmware updates:', error);
@@ -70,32 +80,70 @@ router.get('/', authenticateToken, requireAdmin, (req, res) => {
   }
 });
 
-// الحصول على تحديث فيرموير محدد
-router.get('/:id', authenticateToken, requireAdmin, (req, res) => {
+// الحصول على حالة الاتصال بخدمات التخزين
+router.get('/storage/status', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const update = firmwareUpdates.find(u => u.id === req.params.id);
-    if (!update) {
-      return res.status(404).json({ error: 'Firmware update not found' });
-    }
-    
+    const status = await storageService.getConnectionStatus();
     res.json({
       success: true,
-      data: update
+      data: status,
+      currentProvider: config.storageProvider
     });
   } catch (error) {
-    console.error('Error fetching firmware update:', error);
-    res.status(500).json({ error: 'Failed to fetch firmware update' });
+    console.error('Error getting storage status:', error);
+    res.status(500).json({ error: 'Failed to get storage status' });
   }
 });
 
-// رفع فيرموير جديد إلى Supabase Storage
+// الحصول على رابط تفويض Google Drive
+router.get('/storage/googledrive/auth', authenticateToken, requireAdmin, (req, res) => {
+  try {
+    const authUrl = storageService.getGoogleDriveAuthUrl();
+    res.json({
+      success: true,
+      authUrl
+    });
+  } catch (error) {
+    console.error('Error getting Google Drive auth URL:', error);
+    res.status(500).json({ error: 'Failed to get Google Drive auth URL' });
+  }
+});
+
+// معالجة callback من Google Drive
+router.get('/storage/googledrive/callback', async (req, res) => {
+  try {
+    const { code } = req.query;
+    if (!code) {
+      return res.status(400).json({ error: 'Authorization code is required' });
+    }
+
+    const tokens = await storageService.exchangeGoogleDriveCode(code);
+    
+    // في الإنتاج، احفظ الـ refresh token في متغيرات البيئة
+    console.log('Google Drive tokens received:', {
+      access_token: tokens.access_token ? 'Present' : 'Missing',
+      refresh_token: tokens.refresh_token ? 'Present' : 'Missing'
+    });
+
+    res.json({
+      success: true,
+      message: 'Google Drive authorization successful',
+      refreshToken: tokens.refresh_token
+    });
+  } catch (error) {
+    console.error('Google Drive callback error:', error);
+    res.status(500).json({ error: 'Failed to complete Google Drive authorization' });
+  }
+});
+
+// رفع فيرموير جديد
 router.post('/upload', authenticateToken, requireAdmin, upload.single('firmware'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const { version, description, targetPrinters } = req.body;
+    const { version, description, targetPrinters, storageProvider } = req.body;
     
     if (!version || !description) {
       return res.status(400).json({ error: 'Version and description are required' });
@@ -107,44 +155,16 @@ router.post('/upload', authenticateToken, requireAdmin, upload.single('firmware'
       return res.status(400).json({ error: 'Version already exists' });
     }
 
-    // رفع الملف إلى Supabase Storage
+    // إنشاء اسم ملف فريد
     const fileName = `firmware_${version}_${Date.now()}${path.extname(req.file.originalname)}`;
-    const filePath = `firmware/${fileName}`;
 
-    const { data: uploadData, error: uploadError } = await supabase.storage
-      .from('firmware')
-      .upload(filePath, req.file.buffer, {
-        contentType: req.file.mimetype,
-        upsert: false
-      });
-
-    if (uploadError) {
-      console.error('Supabase upload error:', uploadError);
-      return res.status(500).json({ error: 'Failed to upload file to storage' });
-    }
-
-    // الحصول على الـ public URL
-    const { data: urlData } = supabase.storage
-      .from('firmware')
-      .getPublicUrl(filePath);
-
-    // إضافة السجل إلى قاعدة البيانات
-    const { data: dbData, error: dbError } = await supabase
-      .from('firmware_updates')
-      .insert([
-        {
-          version,
-          url: urlData.publicUrl
-        }
-      ])
-      .select();
-
-    if (dbError) {
-      console.error('Database insert error:', dbError);
-      // حذف الملف من Storage في حالة فشل إدراج قاعدة البيانات
-      await supabase.storage.from('firmware').remove([filePath]);
-      return res.status(500).json({ error: 'Failed to save firmware record' });
-    }
+    // رفع الملف باستخدام StorageService
+    const uploadResult = await storageService.uploadFile(
+      req.file.buffer, 
+      fileName, 
+      version,
+      { provider: storageProvider }
+    );
 
     const newFirmware = {
       id: uuidv4(),
@@ -157,8 +177,15 @@ router.post('/upload', authenticateToken, requireAdmin, upload.single('firmware'
       targetPrinters: JSON.parse(targetPrinters || '[]'),
       uploadedBy: req.user.username,
       checksum: `sha256:${Math.random().toString(36).substring(2, 15)}...`,
-      url: urlData.publicUrl,
-      supabaseId: dbData[0].id
+      storageInfo: {
+        provider: uploadResult.provider,
+        supabaseUrl: uploadResult.results.supabase?.url || null,
+        supabaseDbId: uploadResult.results.supabase?.dbId || null,
+        supabasePath: uploadResult.results.supabase?.path || null,
+        googleDriveId: uploadResult.results.googleDrive?.id || null,
+        googleDriveLink: uploadResult.results.googleDrive?.downloadLink || null,
+        googleDriveViewLink: uploadResult.results.googleDrive?.webViewLink || null
+      }
     };
 
     firmwareUpdates.unshift(newFirmware);
@@ -166,11 +193,12 @@ router.post('/upload', authenticateToken, requireAdmin, upload.single('firmware'
     res.status(201).json({
       success: true,
       data: newFirmware,
-      message: 'Firmware uploaded successfully to Supabase Storage'
+      message: `Firmware uploaded successfully to ${uploadResult.provider}`,
+      uploadResult
     });
   } catch (error) {
     console.error('Upload error:', error);
-    res.status(500).json({ error: 'Upload failed' });
+    res.status(500).json({ error: `Upload failed: ${error.message}` });
   }
 });
 
@@ -250,26 +278,19 @@ router.delete('/:id', authenticateToken, requireAdmin, async (req, res) => {
       return res.status(400).json({ error: 'Cannot delete update that is currently deploying' });
     }
 
-    // حذف الملف من Supabase Storage
-    if (update.url) {
-      const filePath = update.url.split('/').pop();
-      await supabase.storage.from('firmware').remove([`firmware/${filePath}`]);
-    }
-
-    // حذف السجل من قاعدة البيانات
-    if (update.supabaseId) {
-      await supabase
-        .from('firmware_updates')
-        .delete()
-        .eq('id', update.supabaseId);
-    }
+    // حذف الملف من خدمات التخزين
+    await storageService.deleteFile({
+      supabasePath: update.storageInfo.supabasePath,
+      supabaseDbId: update.storageInfo.supabaseDbId,
+      googleDriveId: update.storageInfo.googleDriveId
+    }, update.storageInfo.provider);
 
     const deletedUpdate = firmwareUpdates.splice(updateIndex, 1)[0];
     
     res.json({
       success: true,
       data: deletedUpdate,
-      message: 'Firmware update deleted successfully from Supabase'
+      message: `Firmware update deleted successfully from ${update.storageInfo.provider}`
     });
   } catch (error) {
     console.error('Delete error:', error);
@@ -284,8 +305,7 @@ function simulateDeployment(updateId) {
 
   let progress = 0;
   const interval = setInterval(() => {
-    // محاكاة تقدم عشوائي
-    progress += Math.random() * 15 + 5; // تقدم بين 5-20% في كل مرة
+    progress += Math.random() * 15 + 5;
     
     if (progress >= 100) {
       progress = 100;
@@ -299,7 +319,7 @@ function simulateDeployment(updateId) {
       firmwareUpdates[updateIndex].progress = Math.round(progress);
       console.log(`📡 Deployment progress for ${updateId}: ${Math.round(progress)}%`);
     }
-  }, 2000); // تحديث كل ثانيتين
+  }, 2000);
 
   // محاكاة احتمالية فشل (5%)
   setTimeout(() => {
@@ -310,7 +330,7 @@ function simulateDeployment(updateId) {
       clearInterval(interval);
       console.log(`❌ Firmware deployment failed for update ${updateId}`);
     }
-  }, 10000); // فحص الفشل بعد 10 ثوان
+  }, 10000);
 }
 
 export default router;
